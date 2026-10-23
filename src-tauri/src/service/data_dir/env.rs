@@ -41,7 +41,7 @@ pub(super) fn read_user_home() -> Result<Option<String>, String> {
 #[cfg(windows)]
 pub(super) fn restore_process_env(persisted: Result<Option<String>, String>) {
     match persisted {
-        Ok(Some(value)) => std::env::set_var(DATA_DIR_ENV, value),
+        Ok(Some(value)) => std::env::set_var(DATA_DIR_ENV, crate::service::cli::expand_env(&value)),
         Ok(None) => {}
         Err(error) => log::warn!("DATA_DIR_ENV_READ: {error}"),
     }
@@ -214,7 +214,7 @@ mod tests {
     fn persisted_home_restores_in_an_isolated_process() {
         use std::os::windows::process::CommandExt;
         for mode in [
-            "missing", "stale", "unset", "empty", "blank", "default", "error",
+            "missing", "stale", "expanded", "unset", "empty", "blank", "default", "error",
         ] {
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -251,20 +251,24 @@ mod tests {
         };
         let migrated = "E:\\DSH 数据\\DSHHome";
         let inherited = "D:\\Old Home";
+        std::env::set_var("DSH_TEST_EXPAND_ROOT", "E:\\DSH 数据");
         let persisted = match mode.as_str() {
             "missing" | "stale" => Ok(Some(migrated.to_string())),
+            "expanded" => Ok(Some("%DSH_TEST_EXPAND_ROOT%\\DSHHome".to_string())),
             "empty" => Ok(normalize(Some(String::new()))),
             "blank" => Ok(normalize(Some("   ".to_string()))),
             "error" => Err("REG_QUERY_FAILED: isolated failure".to_string()),
             "unset" | "default" => Ok(None),
             _ => panic!("unknown home restoration mode: {mode}"),
         };
-        if mode != "missing" && mode != "default" {
+        if mode == "expanded" {
+            std::env::set_var(DATA_DIR_ENV, migrated);
+        } else if mode != "missing" && mode != "default" {
             std::env::set_var(DATA_DIR_ENV, inherited);
         }
         restore_process_env(persisted);
         let expected = match mode.as_str() {
-            "missing" | "stale" => Some(migrated.into()),
+            "missing" | "stale" | "expanded" => Some(migrated.into()),
             "default" => None,
             _ => Some(inherited.into()),
         };
