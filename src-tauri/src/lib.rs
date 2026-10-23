@@ -21,6 +21,8 @@ pub fn patch_core_dir(core_dir: &std::path::Path) -> Result<(), String> {
 pub fn run() -> Result<(), String> {
     let started = std::time::Instant::now();
     desktop::startup::verify()?;
+    #[cfg(target_os = "linux")]
+    config::proxy::prepare_inherited_proxy();
     // Wayland EGL workaround：仅 AppImage 需要（见 `should_apply_wayland_egl_workaround`）。
     if should_apply_wayland_egl_workaround(
         &std::env::var("XDG_SESSION_TYPE").unwrap_or_default(),
