@@ -52,7 +52,11 @@ export function useBubbleTracker(pet: PetRef, source?: PetSource | null) {
         if (revision === languageRevisionRef.current)
           updateLanguage(setting.language)
       })
-      .catch(error => console.warn('[pet] failed to load language:', error))
+      .catch((error) => {
+        console.warn('[pet] failed to load language:', error)
+        if (revision === languageRevisionRef.current)
+          updateLanguage()
+      })
   })
   useUnmount(() => {
     languageRevisionRef.current++

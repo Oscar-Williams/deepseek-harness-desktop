@@ -97,6 +97,59 @@ describe('pet language regression', () => {
     expect(native.invoke.mock.calls).toEqual([['get_app_config']])
   })
 
+  it.each([
+    ['zh-CN', '需授权 · 新会话', '等待审批'],
+    ['ko-KR', '승인 필요 · 새 세션', '승인 대기 중'],
+  ])('falls back to %s when the native preference cannot be loaded', async (locale, title, description) => {
+    vi.spyOn(navigator, 'language', 'get').mockReturnValue(locale)
+    const error = new Error('settings unavailable')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    native.invoke.mockRejectedValue(error)
+    const bubble = makeBubble()
+    renderHook(() => useBubbleTracker({ bubble } as unknown as PetRef))
+    act(() => native.listeners.get('session:create')!({ payload: { id: '0', phase: 'approval', workStatus: 'waiting' } }))
+    await waitFor(() => expect(warn).toHaveBeenCalledWith('[pet] failed to load language:', error))
+    expect(petI18n.language).toBe(locale)
+    expect(bubble.mock.calls.at(-1)![0]).toMatchObject({ id: '0', title, description })
+  })
+
+  it('ignores a failed initial preference after a newer language event', async () => {
+    vi.spyOn(navigator, 'language', 'get').mockReturnValue('zh-CN')
+    let reject!: (reason: Error) => void
+    native.invoke.mockReturnValue(new Promise((_resolve, fail) => {
+      reject = fail
+    }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const error = new Error('settings unavailable')
+    const bubble = makeBubble()
+    renderHook(() => useBubbleTracker({ bubble } as unknown as PetRef))
+    act(() => native.listeners.get('session:create')!({ payload: { id: '0', phase: 'approval', workStatus: 'waiting' } }))
+    act(() => native.listeners.get('setting_updated')!({ payload: { language: 'ko' } }))
+    const count = bubble.mock.calls.length
+    await act(async () => reject(error))
+    expect(warn).toHaveBeenCalledWith('[pet] failed to load language:', error)
+    expect(petI18n.language).toBe('ko-KR')
+    expect(bubble).toHaveBeenCalledTimes(count)
+  })
+
+  it('ignores a failed initial preference after unmount', async () => {
+    vi.spyOn(navigator, 'language', 'get').mockReturnValue('zh-CN')
+    let reject!: (reason: Error) => void
+    native.invoke.mockReturnValue(new Promise((_resolve, fail) => {
+      reject = fail
+    }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const error = new Error('settings unavailable')
+    const bubble = makeBubble()
+    const { unmount } = renderHook(() => useBubbleTracker({ bubble } as unknown as PetRef))
+    unmount()
+    await act(async () => reject(error))
+    expect(warn).toHaveBeenCalledWith('[pet] failed to load language:', error)
+    expect(petI18n.language).toBe('en-US')
+    expect(bubble).not.toHaveBeenCalled()
+    expect(native.listeners.size).toBe(0)
+  })
+
   it('ignores an initial preference that arrives after a newer language event', async () => {
     let resolve!: (value: { language: string }) => void
     native.invoke.mockReturnValue(new Promise((done) => {
