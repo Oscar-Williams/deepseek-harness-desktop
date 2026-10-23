@@ -32,6 +32,11 @@ fn startup_login_path_preserves_inherited_directories_and_bounds_shell_wait() {
     let tool = login.join("dsh-login-path-probe");
     std::fs::write(&tool, "#!/bin/sh\nprintf 'login-path-tool'\n").unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for (directory, marker) in [(&inherited, "inherited"), (&login, "login")] {
+        let tool = directory.join("dsh-login-path-priority");
+        std::fs::write(&tool, format!("#!/bin/sh\nprintf '{marker}'\n")).unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let shell = scratch.path().join("login-shell");
     std::fs::write(
         &shell,
@@ -47,10 +52,10 @@ fn startup_login_path_preserves_inherited_directories_and_bounds_shell_wait() {
     ])
     .unwrap();
     let expected = std::env::join_paths([
-        inherited.as_path(),
+        login.as_path(),
         std::path::Path::new("/usr/bin"),
         std::path::Path::new("/bin"),
-        login.as_path(),
+        inherited.as_path(),
     ])
     .unwrap();
     let configure = |executable: &std::path::Path, mode: &str| {
@@ -175,4 +180,14 @@ fn restored_path_child() {
     } else {
         assert_eq!(tool.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
+    let priority = Command::new("dsh-login-path-priority").output().unwrap();
+    assert!(priority.status.success());
+    assert_eq!(
+        priority.stdout,
+        if mode == "restored" {
+            b"login".as_slice()
+        } else {
+            b"inherited".as_slice()
+        }
+    );
 }

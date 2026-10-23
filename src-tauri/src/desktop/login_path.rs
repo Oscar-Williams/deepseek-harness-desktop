@@ -9,7 +9,7 @@ pub fn print() -> Result<(), String> {
     fix_path_env::fix().map_err(|error| error.to_string())?;
     let restored = std::env::var_os("PATH");
     let mut paths = Vec::new();
-    for value in inherited.iter().chain(restored.iter()) {
+    for value in restored.iter().chain(inherited.iter()) {
         for path in std::env::split_paths(value) {
             if !paths.contains(&path) {
                 paths.push(path);
