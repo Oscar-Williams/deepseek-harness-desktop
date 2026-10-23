@@ -5,15 +5,23 @@ import { describe, expect, it, vi } from 'vitest'
 
 const fixture = readFileSync(new URL('./fixtures/permission-settings-rc2.txt', import.meta.url), 'utf8')
 const patch = readFileSync(new URL('../src-tauri/src/service/patch/permission_settings.rs', import.meta.url), 'utf8')
-const original = patch.match(/const DERIVE_ORIGINAL: &str = r#"([\s\S]*?)"#;/)![1]!
-const replacement = patch.match(/const DERIVE_PATCHED: &str = r#"([\s\S]*?)"#;/)![1]!
+const replacements = ['SAVE_ERROR', 'RESPONSE', 'DERIVE'].map((name) => {
+  const original = patch.match(new RegExp(`const ${name}_ORIGINAL: &str = r#"([\\s\\S]*?)"#;`))![1]!
+  const replacement = patch.match(new RegExp(`const ${name}_PATCHED: &str = r#"([\\s\\S]*?)"#;`))![1]!
+  return [original, replacement] as const
+})
+const patchedFixture = replacements.reduce((source, [original, replacement]) => source.replace(original, replacement), fixture)
 
 function harness(patched = true) {
   const view = (revision: number, defaultPreset = 'workspace-write') => ({
     writable: true,
     namespaces: [{ ns: 'permission', revision, value: { defaultPreset } }],
   })
-  const mirror = createSnapshotStore({ status: 'ready', error: null, view: view(4) })
+  const mirror = createSnapshotStore<{ status: string, error: string | null, view: ReturnType<typeof view> | undefined }>({
+    status: 'ready',
+    error: null,
+    view: view(4),
+  })
   const describeFace = {
     ...mirror,
     ensure: async () => {},
@@ -26,10 +34,10 @@ function harness(patched = true) {
         defaultOptions: ['workspace-write', 'danger-full-access'].map(value => ({ value, name: value })),
       },
     }),
-    load: async () => {},
+    load: vi.fn().mockResolvedValue(undefined),
   }
   const mutate = vi.fn().mockResolvedValue({ ok: false, error: 'configuration changed (expected 4, actual 6)' })
-  const Controller = runInNewContext(`${patched ? fixture.replace(original, replacement) : fixture}\nPermissionPresetSettingsController`, {
+  const Controller = runInNewContext(`${patched ? patchedFixture : fixture}\nPermissionPresetSettingsController`, {
     _deepseek_ai_dsh_client_store: { createSnapshotStore },
     displayPermissionPreset: (value: string) => value,
     Error,
@@ -54,6 +62,48 @@ describe('permission settings error patch', () => {
     controller.dispose()
   })
 
+  it('clears catalog derivation errors after its choices recover', async () => {
+    const { controller, catalog } = harness()
+    await controller.load()
+    catalog.store.update((draft) => {
+      draft.value.defaultOptions = draft.value.defaultOptions.filter(option => option.value !== 'workspace-write')
+    })
+    expect(controller.store.getSnapshot()).toMatchObject({
+      status: 'error',
+      error: 'permission catalog does not advertise its current default',
+    })
+    catalog.store.update((draft) => {
+      draft.value.defaultOptions.push({ value: 'workspace-write', name: 'Workspace' })
+    })
+    expect(controller.store.getSnapshot()).toMatchObject({ status: 'ready', error: null })
+    controller.dispose()
+  })
+
+  it('clears a catalog load error after a catalog refresh succeeds', async () => {
+    const { controller, catalog } = harness()
+    catalog.load.mockRejectedValueOnce(new Error('catalog offline'))
+    await controller.load()
+    expect(controller.store.getSnapshot()).toMatchObject({ status: 'error', error: 'catalog offline' })
+    catalog.store.update((draft) => {
+      draft.value.defaultOptions[0]!.name = 'Workspace'
+    })
+    expect(controller.store.getSnapshot()).toMatchObject({ status: 'ready', error: null })
+    controller.dispose()
+  })
+
+  it('clears an absent mirror error when a view becomes available', async () => {
+    const { controller, describeFace, view } = harness()
+    await controller.load()
+    describeFace.update((draft) => {
+      draft.view = undefined
+      draft.error = 'mirror offline'
+    })
+    expect(controller.store.getSnapshot()).toMatchObject({ status: 'error', error: 'mirror offline' })
+    describeFace.acceptView(view(6))
+    expect(controller.store.getSnapshot()).toMatchObject({ status: 'ready', error: null, revision: 6 })
+    controller.dispose()
+  })
+
   it('keeps failure visible across mirror and catalog refresh, then accepts a successful save', async () => {
     const { controller, describeFace, catalog, mutate, view } = harness()
     await controller.load()
@@ -63,7 +113,19 @@ describe('permission settings error patch', () => {
       path: ['defaultPreset'],
       value: 'danger-full-access',
     }], 4)
+    describeFace.update((draft) => {
+      draft.view = undefined
+      draft.error = 'mirror offline'
+    })
+    expect(controller.store.getSnapshot().error).toBe('mirror offline')
     describeFace.acceptView(view(6))
+    catalog.store.update((draft) => {
+      draft.value.defaultOptions = draft.value.defaultOptions.filter(option => option.value !== 'workspace-write')
+    })
+    expect(controller.store.getSnapshot().error).toBe('permission catalog does not advertise its current default')
+    catalog.store.update((draft) => {
+      draft.value.defaultOptions.push({ value: 'workspace-write', name: 'Workspace' })
+    })
     catalog.store.update((draft) => {
       draft.value.defaultOptions[0]!.name = 'Workspace'
     })
