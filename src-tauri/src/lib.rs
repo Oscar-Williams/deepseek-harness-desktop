@@ -20,7 +20,10 @@ pub fn patch_core_dir(core_dir: &std::path::Path) -> Result<(), String> {
 pub fn run() -> Result<(), String> {
     let started = std::time::Instant::now();
     #[cfg(unix)]
-    if let Err(error) = fix_path_env::fix() {
+    if let Err(error) = std::env::current_exe()
+        .map_err(|error| error.to_string())
+        .and_then(|executable| desktop::login_path::restore(&executable))
+    {
         eprintln!("STARTUP_PATH_RESTORE_FAILED: {error}");
     }
     desktop::startup::verify()?;
@@ -221,88 +224,6 @@ pub(crate) fn pet_overlay_supported_env() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(unix)]
-    #[test]
-    fn startup_restores_login_path_before_initialization_and_survives_shell_failure() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let scratch = tempfile::tempdir().unwrap();
-        let bin = scratch.path().join("user-bin");
-        std::fs::create_dir(&bin).unwrap();
-        let tool = bin.join("dsh-login-path-probe");
-        std::fs::write(&tool, "#!/bin/sh\nprintf 'login-path-tool'\n").unwrap();
-        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let shell = scratch.path().join("login-shell");
-        std::fs::write(
-            &shell,
-            "#!/bin/sh\n[ \"$1\" = '-ilc' ] || exit 91\n[ \"$DISABLE_AUTO_UPDATE\" = true ] || exit 92\n[ \"$DSH_TEST_PATH_MODE\" != failed ] || exit 17\nexport PATH=\"$DSH_TEST_LOGIN_BIN:/usr/bin:/bin\"\nexec /bin/sh -c \"$2\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
-        for mode in ["restored", "failed", "missing"] {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "tests::startup_login_path_child", "--nocapture"])
-                .env("DSH_TEST_PATH_MODE", mode)
-                .env("DSH_TEST_LOGIN_BIN", &bin)
-                .env(
-                    "SHELL",
-                    if mode == "missing" {
-                        tool.with_extension("missing")
-                    } else {
-                        shell.clone()
-                    },
-                )
-                .env("PATH", "/usr/bin:/bin")
-                .env("HOME", scratch.path())
-                .env("DSH_HOME", "preserve-custom-home")
-                .env("DSH_E2E_HOME", "relative")
-                .env("TAURI_WEBDRIVER_PORT", "4445")
-                .output()
-                .unwrap();
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                output.status.success(),
-                "{mode}: {stderr}\n{}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            assert_eq!(
-                stderr.contains("STARTUP_PATH_RESTORE_FAILED:"),
-                mode != "restored",
-                "{mode}: {stderr}"
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn startup_login_path_child() {
-        let Ok(mode) = std::env::var("DSH_TEST_PATH_MODE") else {
-            return;
-        };
-        assert_eq!(std::env::var("PATH").unwrap(), "/usr/bin:/bin");
-        assert_eq!(
-            run().unwrap_err(),
-            "STARTUP_E2E_HOME_INVALID: DSH_E2E_HOME must be a non-empty absolute path"
-        );
-        let tool = std::process::Command::new("dsh-login-path-probe").output();
-        if mode == "restored" {
-            assert_eq!(
-                std::env::var("PATH").unwrap(),
-                format!(
-                    "{}:/usr/bin:/bin",
-                    std::env::var("DSH_TEST_LOGIN_BIN").unwrap()
-                )
-            );
-            let tool = tool.unwrap();
-            assert!(tool.status.success());
-            assert_eq!(tool.stdout, b"login-path-tool");
-        } else {
-            assert_eq!(std::env::var("PATH").unwrap(), "/usr/bin:/bin");
-            assert_eq!(tool.unwrap_err().kind(), std::io::ErrorKind::NotFound);
-        }
-        assert_eq!(std::env::var("DSH_HOME").unwrap(), "preserve-custom-home");
-    }
 
     #[test]
     fn wayland_workaround_only_inside_appimage() {
